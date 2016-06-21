@@ -1,0 +1,11 @@
+Installation: Put "Maya_BVH_Export_Bento_Project.mel" in your
+"scripts" folder. On PC that would be in Documents>Maya>Version
+Number>scripts. Restart Maya if you had it open. In Maya open the
+Script Editor and click the File menu in the Script Editor window and
+select "Source Script..." . Navigate to the "scripts" folder and
+select "Maya_BVH_Export_Bento_Project.mel".  The export window should
+open. NOTE: When making BVH animations Y axis has to be set to up, not
+Z. Just before you export select the "mPelvis" bone or "hip" bone if
+you are using a skeleton whose bone names are using BVH naming
+convention. You do not have to use BVH names; the normal SL bone names
+will work fine.

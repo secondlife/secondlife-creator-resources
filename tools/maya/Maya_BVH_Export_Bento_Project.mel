@@ -1,0 +1,874 @@
+/*  
+File:          BVH Export v1.6
+Author:        Samantha Patterson
+Last Updated:  2016-02-12
+Changed in this version:   Added OpenSource copyright notice.
+
+Copyright (C) 2005-2021 by Samantha Patterson <circle(at)deeptht(dot)armory(dot)com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+
+//**************My system auto-finds this file.  If yours does not, you will need to locate
+//filebrowse.mel, uncomment the following line, and chang ethe FILEBROWSEPATH to match the 
+//directory you are using.
+//source "FILEBROWSEPATH/filebrowse.mel"
+
+
+/*BVH file export.  Exports selected objects in Maya and their animation to 
+  a Biovision Hiearchy file format.
+
+  Written by Samantha Patterson <circle(at)deeptht.armory.com>, comments
+  and suggestions are welcome.
+
+  Many thanks to Sergiy Migalskiy <migdalskiy(at)hotmail.com> and 
+  and sung joo, sjkang(at)bigfilm.co.kr for their development of the BVH
+  importer.
+*/
+
+//Global variables c for 'Character String', h for Handle.
+global int $ghFile;				//File handle.
+global string $ghFilename;			//Screen component for filename
+global string $gcFilename="MyFile.bvh";		//Default file name.
+global string $gcPrefsFile;
+$gcPrefsFile=`internalVar -userPrefDir` + "bvhexport_prefs.mel";
+global int $giIndentLvl=0;			//Level of indention.
+global int $giFrameNo;				//Frame number being processed.
+
+string $gsRootNode;
+
+//Interface variables.
+global int $giJointSelect=0;		//Use toplevel joint as root.
+global int $giRangeSelect=0;		//Timerange to use.  0=all.  1=selected.
+global int $giRange[2];			//If not using all, use this range.
+global int $giSampleSelect=0;		//Output all frames.
+global int $giSampleRate=2;		//Use every Nth frame.
+global int $giBaseTranslation=1;	//Default to World orientation.
+global int $giBaseRotation=1;		//Default to World rotation.
+global int $giPickRoot=0;		//Not in root-pick mode.
+global int $giPickMode=0;		//Store the original pickroot mode here.
+global string $gcMajor[3];       //The minor axis rotation order
+global string $gcMinor[3];       //The minor axis rotation order
+
+//Handles to controls.
+global string $ghRangeStart="", $ghRangeEnd="", $ghWindow="",$ghHelpWin="";
+global string $ghSampleRate="", $ghRotate="", $ghTranslate="", $ghPickRoot;
+
+$giRange[0]=1;
+$giRange[1]=1;
+
+
+//WritePrefFile opens the file defined by gcPrefsFile and writes out 
+//global variables that contain important configuration settings.
+//These lines are read and evaluated by ReadPrefs, so in this way the
+//file is both human-readable and easily expandable.
+global proc WritePrefFile ( ) {
+   global string $gcPrefsFile;		//Where to load prefs from.
+   int $lhFile;				//File handle.
+
+   global string $gcFilename;		//Output file name.
+   global string $gcShortFilename;	//Output file name with path removed.
+   global int $giJointSelect;		//Use toplevel joint as root.
+   global int $giRangeSelect;		//Use all.
+   global int $giRange[2];		//If not using all, use this range.
+   global int $giSampleSelect;		//Output all frames.
+   global int $giSampleRate;		//Use every Nth frame.
+   global int $giBaseTranslation;	//Default to World orientation.
+   global int $giBaseRotation;		//Default to World rotation.
+   global string $ghFilename, $ghTranslate, $ghRotate;
+   global string $gcMajorMenu, $gcMinorMenu;
+
+   $lhFile = `fopen $gcPrefsFile "w"`;	//Open file.
+
+   //****Update variables with current settings.
+   $gcFilename = `textField -query -text $ghFilename`;
+   $giPickMode=`selectMode -q -root`;
+   $giBaseTranslation = `radioButtonGrp -q -select $ghTranslate`;
+   $giBaseRotation    = `radioButtonGrp -q -select $ghRotate`;
+
+   //****Write variables to file.
+   WriteVar($lhFile, "string","$gcFilename",     $gcFilename);
+   WriteVar($lhFile, "int", "$giJointSelect",     (string)$giJointSelect);
+   WriteVar($lhFile, "int", "$giRangeSelect",     (string)$giRangeSelect);
+   WriteVar($lhFile, "int", "$giRange[0]",        (string)$giRange[0]);
+   WriteVar($lhFile, "int", "$giRange[1]",        (string)$giRange[1]);
+   WriteVar($lhFile, "int", "$giSampleSelect",    (string)$giSampleSelect);
+   WriteVar($lhFile, "int", "$giSampleRate",      (string)$giSampleRate);
+   WriteVar($lhFile, "int", "$giBaseTranslation", (string)$giBaseTranslation);
+   WriteVar($lhFile, "int", "$giBaseRotation",    (string)$giBaseRotation);
+   WriteVar($lhFile, "string","$gcMajorMenu",     $gcMajorMenu);
+   WriteVar($lhFile, "string","$gcMinorMenu",     $gcMinorMenu);
+
+   fclose $lhFile;				//Close file.
+}
+
+//WriteVar writes a line to the preference file using the type,variable, and
+//value parameters passed into it.
+global proc WriteVar ( int $phFile, string $psType, 
+                       string $psVar, string $psVal) {
+   if ($psType == "string") {  		//For strings, add quotes.
+      $psVal = "\"" + $psVal + "\"";
+   }
+
+   //string $lsOutput="global " + $psType + " " + $psVar + "=" + $psVal + ";\r";
+   string $lsOutput="global " + $psType + " " + $psVar + ";\r" +  $psVar + "=" + $psVal + ";\r";
+   fprint $phFile $lsOutput;
+}
+   
+//ReadPrefFile opens the file defined by gcPrefsFile and reads the the
+//contents of it.  For simplicity and future expandibility, this file
+//simply contains variable assignments which are read in and eval'd.
+global proc ReadPrefFile ( ) {
+   global string $gcPrefsFile;		//Where to load prefs from.
+   int $lhFile;				//File handle.
+
+   if (`filetest -s $gcPrefsFile`) {	//File exists.
+      $lhFile = `fopen $gcPrefsFile "r"`;	//Open file.
+
+      while (!feof($lhFile)) {			//Read lines.
+         eval(`fgetline $lhFile`);		//Evaluate lines.
+      }
+      fclose $lhFile;				//Close file.
+   }
+      
+}
+
+//PickRoot sets the select mode to pick the root of the hierarchy.
+global proc PickRoot() {
+   global int $giPickRoot;		//Not in root-pick mode.
+   global int $giPickMode;		//Store the original pickroot mode here.
+   global string $ghPickRoot;		//Handle to PickRoot button.
+
+   if ($ghPickRoot=="") return;		//Control not initialized.  Bail.
+
+   if ($giPickRoot==0) {		//Not in root picking mode.
+      $giPickMode=`selectMode -q -root`;	//Get current value to restore later.
+      selectMode -root;
+      $giPickRoot=1;
+      button -edit -label "Done" $ghPickRoot;
+   } else {
+      if ($giPickMode==0) {
+         selectMode -object;
+      }
+      $giPickRoot=0;
+      button -edit -label "Pick" $ghPickRoot;
+   }
+}
+      
+   
+//IndentText accepts the passed in integer and returns a string of tabs.
+global proc string IndentText ( int $piIndent ) {
+   string $lsReturn="";
+   int $i;
+
+   for ( $i=0; $i < $piIndent; $i++ ) {
+      $lsReturn=$lsReturn + "\t";
+   }
+
+   return $lsReturn;
+}
+
+//strstrr searches backwards through src to find pattern.  Returns index
+//or 0
+global proc int strstrr (string $pattern, string $src) {
+   int $liPatLen=`size $pattern`-1;
+   int $i=`size $src` - $liPatLen;
+
+   while ($i > 0) {
+      if (`substring $src $i ($i+$liPatLen)`==$pattern) {
+         return $i;
+      }
+      $i--;
+   }
+   return $i;
+}
+
+//Writes the data to the file in the correct order for the given axis.
+global proc string MakeRotation (float $x, float $y, float $z, int $level) {
+    global string $gcMajorMenu, $gcMinorMenu;
+    global string $gcMajor[3], $gcMinor[3];
+
+    string $rVal="";
+
+    //Do a little cleanup of our numbers for easier parsing.
+    string $srx=noScience($x);
+    string $sry=noScience($y);
+    string $srz=noScience($z);
+
+    int $i;
+
+    for ($i=0;$i<3;$i++)
+    {
+        string $axis;
+
+        if ($level==0)
+        {
+            $axis = $gcMajor[$i];
+        }
+        else
+        {
+            $axis = $gcMinor[$i];
+        }
+
+        if ($axis=="X") $rVal=$rVal+$srx+" ";
+        if ($axis=="Y") $rVal=$rVal+$sry+" ";
+        if ($axis=="Z") $rVal=$rVal+$srz+" ";
+    }
+
+   return $rVal;
+}
+
+//WriteBVHHeader is passed a string of the current object and uses the 
+//global file handle to write the values to it.  IndentLvl is used for
+//putting space indention in the text for readability.
+global proc WriteBVHHeader ( int $piPass, string $psNode ) {
+   global int $ghFile;
+   global string $gcMajorMenu, $gcMinorMenu;
+   global string $gcMajor[3];
+   global string $gcMinor[3];
+   global int $giIndentLvl;	//Level of indention.
+   int $liLen=`size $psNode`;	//string length.
+   string $lsNode = $psNode;
+   int $i;
+
+   for ($i=($liLen-1);$i>0;$i--) {	//Trim path off front of node if needed.
+      if (`substring $psNode $i $i`=="|") {
+        $lsNode=`substring $psNode ($i+1) $liLen`;
+        break;
+      }
+   }
+
+   float $tx,$ty,$tz;		//Translation values.
+
+   string $ro[3];
+
+   int $i;
+
+   for ($i=0;$i<3;$i++)
+   {
+      if ($giIndentLvl==0)
+      {
+         $ro[$i] = $gcMajor[$i];
+      }
+      else
+      {
+         $ro[$i] = $gcMinor[$i];
+      }
+   }
+
+   string $lsChildren[] = `listRelatives -c $psNode`;
+
+   string $lsIndent=IndentText($giIndentLvl);
+   string $lsChannels="\tCHANNELS 6 Xposition Yposition Zposition "+$ro[0]+"rotation "+$ro[1]+"rotation "+$ro[2]+"rotation\r";
+
+   float $p[]=`xform -os -q -t $psNode`; 	//Get translation.
+   $tx=$p[0];
+   $ty=$p[1];
+   $tz=$p[2];
+
+   if ($piPass==1) {
+      string $lsOutput="JOINT " + $lsNode;
+      if ($giIndentLvl==0) {	//Toplevel object.
+         $lsOutput="ROOT " + $lsNode;	//Write first line of file.
+         $tx=0;		//Set root X
+         $ty=0;		//Set root Y
+         $tz=0;		//Set root Z
+      } else {
+         if ($lsChildren[0] == "") {	//End effector.
+            $lsOutput="End Site";
+         }
+      }
+
+      $lsOutput=$lsIndent+$lsOutput+"\r"+$lsIndent+"{\r";
+      $lsOutput=$lsOutput+$lsIndent+"\tOFFSET\t"+noScience($tx)+"\t"+noScience($ty)+"\t"+noScience($tz)+"\r";
+      if ($lsChildren[0] != "") {	//End effector.
+         $lsOutput=$lsOutput+$lsIndent+$lsChannels;
+      }
+      fprint $ghFile $lsOutput;
+
+   } else {		//Close parens for this level.
+      $lsOutput=$lsIndent+"}\r";	
+      fprint $ghFile $lsOutput;
+   }
+}
+
+
+//strstrr searches backwards through src to find pattern.  Returns index
+//or 0
+global proc int strstrr (string $pattern, string $src) 
+{
+    int $liPatLen=`size $pattern`-1;
+    int $i=`size $src` - $liPatLen;
+
+    while ($i > 0)
+    {
+        if (`substring $src $i ($i+$liPatLen)`==$pattern) 
+        {
+            return $i;
+        }
+        $i--;
+    }
+    return $i;
+}
+
+global proc string truncateDecimalString ( string $psStr, int $piPrecision )
+{
+    if ($piPrecision > 0)
+    {
+        int $point = strstrr(".", $psStr) + 1;
+        if ( $point > 1 )
+        {
+            $len = `size $psStr`;
+            if ( ($point + $piPrecision) < $len )
+            {
+                $psStr = `substring $psStr 1 ($point + $piPrecision)`;
+            }
+        }
+    }
+    return $psStr;
+}
+
+//Remove decimal from string representation of a float.
+global proc string noDecimal (string $psStr)
+{
+    int $dec = strstrr(".", $psStr);
+    int $len = `size $psStr`;
+
+    if ($dec <= 0) return $psStr;
+
+    string $lsOut = `substring $psStr 1 ($dec - 1)` + `substring $psStr ($dec+1) $len`;
+    return $lsOut;
+}
+
+//Maya provides no formatter for floats.
+global proc string noScience (float $pfNum)
+{
+    int $piPrecision = 5;
+
+    float $lfCutoff = `pow 10 ( ( -1 * ($piPrecision+1)  ) )`;
+    if ( $pfNum > ($lfCutoff * -1) && $pfNum < $lfCutoff )  //Get rid of near-0 values.
+    {
+        return "0.0";
+    }
+
+    //$pfNum =`pow 10 ( $piPrecision + 1 )`;
+
+    string $lsStr = (string)$pfNum;
+    string $lsResult="";
+    int $e = strstrr("e", $lsStr);
+
+    if ( $e <= 0 )  //No scientific notation, we're done!
+    {
+        return truncateDecimalString ( $lsStr, $piPrecision );
+    }
+
+    int $len = `size $lsStr` + 1;
+
+    if ( `substring $lsStr 1 1` == "-" )
+    {
+        $lsResult="-";
+        $len --;
+        $lsStr = `substring $lsStr 2 $len`;
+        $e--;
+    }
+        
+    int $len = `size $lsStr`;
+    string $val = noDecimal ( `substring $lsStr 1 ($e - 1)` );
+
+    $e++;
+    int $neg=0;
+    if ( `substring $lsStr $e $e` == "-" )
+    {
+        $neg=1;
+        $e++;
+    }
+
+    int $exp = (int) `substring $lsStr $e $len`;
+
+    if ($neg)
+    {
+        $lsResult = $lsResult + "0.";
+        $exp --;
+    }
+    else
+    {
+        $lsResult = $lsResult + $val;
+    }
+
+    int $i;
+    for ($i = 0; $i< $exp; $i++)
+    {
+        $lsResult = $lsResult + "0";
+    }
+
+    if ($neg)
+    {
+        $lsResult = $lsResult + $val;
+    }
+
+    return truncateDecimalString ( $lsResult, $piPrecision );
+}
+//WriteBVHFrame uses the global giFrameNo to identify the current frame
+//and pulls data from it to write to gFile.
+//Note of particular interest:  The rotate fields are stored in the 
+//order X, Z, Y.
+global proc WriteBVHFrame ( int $piPass, string $psNode ) {
+   global int $ghFile;
+   global int $giFrameNo;	//Frame number in process.
+   global int $giIndentLvl;	//Level of indention.
+   global string $ghRotate, $ghTranslate;
+   global int $giBaseRotation, $giBaseTranslation;
+   int $liLen=`size $psNode`;	//string length.
+   float $p[];
+
+   if ($piPass==1) {        //Only do on first pass.
+      float $tx,$ty,$tz;		//Translation values.
+      float $rx,$ry,$rz;		//Translation values.
+   
+      string $lsChildren[] = `listRelatives -c $psNode`;
+      string $lsTmp="";			//String for output buffer.
+      string $lsAttrib="";		//Buff to create attrib command.
+   
+      $giBaseTranslation = `radioButtonGrp -q -select $ghTranslate`;
+      $giBaseRotation    = `radioButtonGrp -q -select $ghRotate`;
+      
+      if ($giBaseTranslation==1 && $giIndentLvl==0) { 		//Transform using world space.
+         $p=`xform -ws -q -t $psNode`; 	//Get translation.
+      } else {
+         $p=`xform -wd -q -t $psNode`; 	//Get translation.
+      }
+
+      $tx=$p[0];
+      $ty=$p[1];
+      $tz=$p[2];
+
+      //Matrix rotation stuff.
+
+      string $roto=`xform -q -roo $psNode`;	//Get orientation.
+      //xyz zxy zyx
+      xform -p true -roo "xyz" $psNode;		//Force to orientation.
+      if ($giBaseRotation==1 && $giIndentLvl==0) { 	//Transform using world space.
+         $p=`xform -ws -q -ro $psNode`; 	//Get rotation.
+      } else {
+         $p=`xform -os -q -ro $psNode`; 	//Get rotation.
+      }
+      xform -p true -roo $roto $psNode;		//Return to current orient.
+
+      float $x=deg_to_rad($p[0]);	//Convert to radians.
+      float $y=deg_to_rad($p[1]);	
+      float $z=deg_to_rad($p[2]);
+
+      if ($x <= 0.0 && $x > -0.000000000001) $x=0.0;
+      if ($y <= 0.0 && $y > -0.000000000001) $y=0.0;
+      if ($z <= 0.0 && $z > -0.000000000001) $z=0.0;
+
+      float $A=cos($x);
+      float $B=sin($x);
+      float $C=cos($y);
+      float $D=sin($y);
+      float $E=cos($z);
+      float $F=sin($z);
+
+      $rx= rad_to_deg(asin($B * $C));
+      $ry= rad_to_deg(atan2($D, $A * $C));
+      $rz= rad_to_deg(atan2(-1 * $B * $D * $E + $A * $F, $B * $D * $F + $A  * $E));
+
+      $rotation=MakeRotation($rx,$ry,$rz,$giIndentLvl);
+        string $lsTmp="";
+     if ($lsChildren[0] != "") 
+     {	//End effector.
+        //Xpos Ypos Zpos Xrot Zrot Yrot
+        $lsTmp=$lsTmp+noScience($tx)+" "+noScience($ty)+" "+ noScience($tz) + " "+$rotation;
+        if ($psNode == "rForeArm")
+        {
+            print ("rForeArm:  " + $lsTmp + "\n");
+        }
+            
+     }
+      fprint $ghFile $lsTmp;
+   }
+}
+
+//FindRootJoint climbs from the current node up the node tree to the trunk.
+//Returns the name of the root bone node.  This routine can start at any 
+//object which is a child of the root node and will stop at the toplevel 
+//joint.
+
+global proc string FindRootJoint ( string $psNode ) {
+   string $lsOutNode;
+
+   $lsOutNode = $psNode;		//Initialize while loop.
+
+   int $iJoint=0;			//Looking for parent that is a joint.
+   if (`objectType -isType joint $lsOutNode`) { 
+      $iJoint++;
+   }
+   string $lsParent[] = `listRelatives -p $lsOutNode`;
+
+   //Loop while type is joint or looking for a joint.
+   while ($lsParent[0] != "" && (`objectType -isType joint $lsParent[0]` || $iJoint==0)) {
+      if (`objectType -isType joint $lsParent[0]`) {
+         $iJoint++;			//Increment bone counter.
+         $lsOutNode = $lsParent[0];	//Identify current toplevel bone.
+      }
+      $lsParent = `listRelatives -p $lsParent[0]`;
+   }
+   return $lsOutNode;
+}
+
+//RecurseNodeTree looks at the children of this level object and does 'stuff'
+//with it.  (stuff is a callback function to be executed via eval.)
+//This routine is called recursively to navigate the object tree.
+global proc RecurseNodeTree ( string $psNode, string $psStuff ) {
+   string $lsNodes[];
+   string $lsAttrib;
+   global int $giIndentLvl;	//Level of indention.
+
+   //Evaluate callback function for this level.
+   string $lsCmd= $psStuff + " 1 \"" + $psNode + "\"";
+   eval $lsCmd;
+
+   $giIndentLvl ++;		//Going down a level, change indent for text.
+   string $lsChildren[] = `listRelatives -c $psNode`;
+
+   for ($lsChild in $lsChildren) {
+      if (`objectType -isType joint $lsChild`) {	//Only recurse joints.
+         RecurseNodeTree ($lsChild, $psStuff);
+      }
+   }
+
+   $giIndentLvl --;		//Going up a level, change indent for text.
+
+   string $lsCmd= $psStuff + " 2 \"" + $psNode + "\"";
+   eval $lsCmd;
+}
+   
+
+//User toggled selected time range.  Enable/disable accordingly and set vals.
+global proc TimeRange (int $piTimeRange) {
+   global int $giRangeSelect;		//Which joint level to use.
+   global string $ghRangeStart, $ghRangeEnd;
+
+   $giRangeSelect = $piTimeRange;
+   if ($ghRangeStart != "") {
+      intField -edit -enable $piTimeRange $ghRangeStart;
+      intField -edit -enable $piTimeRange $ghRangeEnd;
+   }
+}
+
+//User toggled sample rate..  Enable/disable accordingly and set vals.
+global proc SampleRate (int $piSampleSelect) {
+   global int $giSampleSelect;		//Which joint level to use.
+   global string $ghSampleRate;
+
+   $giSampleSelect = $piSampleSelect;
+   if ($ghSampleRate != "") {
+      intField -edit -enable $piSampleSelect $ghSampleRate;
+   }
+}
+
+//This routine is activated when the OK button is clicked.
+global proc int OnOkay () {
+   global string $ghFilename, $ghRangeStart, $ghRangeEnd, $gcMajorMenu, $gcMinorMenu;
+   global int $ghFile;
+   global int $giFrameNo;		//Frame number being processed.
+   global int $giJointSelect;		//Use toplevel joint as root.
+   global int $giRangeSelect;		//Timerange to use.  0=all.  1=selected.
+   global int $giRange[2];		//If not using all, use this range.
+   global int $giSampleRate;		//Rate data is sampled at.
+   global string $ghSampleRate;
+   global int $giSampleSelect;
+   global string $gcMajor[3], $gcMinor[3];
+   string $result;
+
+   $lbAuto=`autoKeyframe -q -st`;	//Get auto keyframing mode.
+   autoKeyframe -st false;			//Turn off auto keyframing.
+
+   string $lsNodes[] = `selectedNodes`;		//Get selected nodes.
+   string $lsNode = $lsNodes[0];		//Get first node selected.
+
+   if ($giJointSelect ==0) {		//Use the toplevel joint node.
+      $lsNode=FindRootJoint($lsNode);
+   }
+
+   if ($lsNode == "") {				//No selected nodes.
+      confirmDialog -title "Information" -message "No nodes selected.  Please select root node before running this script." -button "OK";
+      return 0;
+   }
+
+   //Get filename from the filename object.
+   string $gcFilename = `textField -q -tx $ghFilename`;
+
+   //Get the major and minor axis rotate orders.
+   string $gcMajorMenu = `menu -q -label hMajorMenu`;
+   string $gcMinorMenu = `menu -q -label hMinorMenu`;
+
+   //Get the axis order for the major axis.
+   $gcMajor[0] = `substring $gcMajorMenu 1 1`;
+   $gcMajor[1] = `substring $gcMajorMenu 3 3`;
+   $gcMajor[2] = `substring $gcMajorMenu 5 5`;
+
+   //Get the axis order for the minor axis.
+   $gcMinor[0] = `substring $gcMinorMenu 1 1`;
+   $gcMinor[1] = `substring $gcMinorMenu 3 3`;
+   $gcMinor[2] = `substring $gcMinorMenu 5 5`;
+
+   if (`filetest -s $gcFilename`) {
+      string $cMsg = "Overwrite " + $gcFilename + "?";
+
+      $result=`confirmDialog -title "Confirm" -message $cMsg -button "Yes" -button "No" -defaultButton "Yes" -cancelButton "No" -dismissString "No"`;
+
+      if ( $result == "No" ) return 0;
+   }
+
+   currentTime -20;	//Set the current frame number.
+
+   print ("File:  " + $gcFilename + "\n");
+   print ("Generating BHV Header data.\n");
+
+   $ghFile=`fopen $gcFilename "w"`;		//Open to write.
+   fprint $ghFile "HIERARCHY\r";		//Write first line of file.
+
+   RecurseNodeTree ($lsNode, "WriteBVHHeader");	//Recurse tree.
+
+   //****************FETCH DATA FROM SCREEN CONTROLS*******************
+   if ($giRangeSelect == 0) {		//Using full keyed time range.
+      $giRange[0]=1;
+      $giRange[1]=`findKeyframe -hierarchy below -which last $lsNode`;
+   } else {				//Using user-defined time range.
+      $giRange[0]=`intField -q -v $ghRangeStart`;
+      $giRange[1]=`intField -q -v $ghRangeEnd`;
+   }
+
+   if ($giSampleSelect == 0) {		//Full resolution sampling.
+      $giSampleRate = 1;
+   } else {
+      $giSampleRate=`intField -q -v $ghSampleRate`;
+   }
+
+   //****************START DEFINTION OF MOTION*******************
+   int $NumKeys=($giRange[1]-$giRange[0]+1)/$giSampleRate;
+   string $lsTmp = "Frames:\t" + $NumKeys +  "\r";
+   fprint $ghFile "MOTION\r";		
+   fprint $ghFile $lsTmp;
+
+   float $lfSampleRate = 1.0/30.0;		//Float is for FPS.
+   
+   $lfSampleRate = $lfSampleRate * (float)$giSampleRate;	//FPS.
+   $lsTmp = "Frame Time: " + noScience($lfSampleRate) + "\r";
+   
+   fprint $ghFile $lsTmp;
+
+   //Always write at least one frame.
+   if ($giRange[1] < $giRange[0]) $giRange[1]=$giRange[0];
+
+   //Loop through frames.  For each frame, recurse tree and write to file.
+   for ( $giFrameNo=$giRange[0];$giFrameNo<=$giRange[1];$giFrameNo+=$giSampleRate) {
+      currentTime $giFrameNo;	//Set the current frame number.
+      print ("Writing frame " + ($giFrameNo + 1 - $giRange[0]) + 
+             " of " + $NumKeys + "\n");
+      RecurseNodeTree ($lsNode, "WriteBVHFrame");
+      fprint $ghFile "\r";
+   }
+
+   fclose $ghFile;				//Close the file.
+
+   autoKeyframe -st $lbAuto;			//Restore keyframing mode.
+
+   return 1;
+}
+
+//ExitBVH writes the user's preferences to a file and destroys the window.
+global proc ExitBVH() {
+   global string $ghWindow;
+   global int $giPickRoot;
+
+   if ($giPickRoot==1) {		//If pick mode is set, unset.
+      PickRoot();
+   }
+
+   WritePrefFile();			//Write BVH export preferences.
+   deleteUI -window $ghWindow;
+}
+
+//SetDir is called when the Pick directory button is pressed.  It takes the
+//filename string and parses off the filename, stores that to a temp name,
+//and runs the directory command with the current path.
+global proc SetDir() {
+   global string $ghFilename, $gcFilename, $gcShortFilename;
+
+   $gcFilename = `textField -query -text $ghFilename`;
+   string $lcDirName = dirname($gcFilename);
+
+   int $liDirLen =`size $lcDirName`+1;	//Move past last dir character.
+   int $liNameLen=`size $gcFilename`;
+
+   string $tmp=`substring $gcFilename $liDirLen $liDirLen`;
+   if ($tmp=="\\"||$tmp=="/") {
+      $liDirLen++;
+   }
+
+   $gcShortFilename=`substring $gcFilename $liDirLen $liNameLen`;
+   fileBrowser "GetDir" "Path" "" 4;
+}
+
+//Gets directory from pick window, inserts it into filename.
+global proc GetDir(string $select_dir,string $dir)
+{
+   global string $gcFilename, $gcShortFilename, $ghFilename;
+   $gcFilename=$select_dir+$gcShortFilename;
+   textField -edit -text $gcFilename $ghFilename;
+}
+
+//OnHelp generates a scrollable text window which describes the BVHexporter
+//script.
+global proc OnHelp() {
+   global string $ghHelpWin;
+
+   if (!`window -exists -query $ghHelpWin`) { //Open window if it doesn't exist.
+      $ghHelpWin = `window -width 300 -height 200 
+                       -title "Export to BVH Help" -iconName "BVH Export Help"`;
+   string $txt="NEW FEATURES in 1.6:\n\n  Addition of joint position export for joints other than root joint.\nMinor fix for output of Major Axis values.\n\n";
+   $txt=$txt+"FIXES:NEW FEATURES\n\nRoot joint selection:  The radio buttons under Root Joint let you pick whether to work from the current joint or to search for the base of the hierarchy.  Selecting 'Top' should work, even if you have the skin selected.  The Pick button switches selection mode to Hierarcy.  Clicking it again or dismissing the window will restore your previous selection mode.\n\nTime Range Selection:  Keyed Range will automatically select all frames from 1 to N where keys are set on any part of the joint hiearchy.  Manual allows you to specify a time range.\n\nSample Rate:  All Frames will create a key for every frame in the timeline in the BVH file.  Every Nth frame reduces the sample rate and changes the framespeed in the BVH file.\n\nBase Adjustment:  Both Translation and Rotation for the root of the hierarchy may be recorded with either object-local offsets or world ";
+   $txt=$txt+"offsets.  If the hierarchy is parented to another object and the object is moved, in World mode, the translation and/or rotation could be recorded for the hierarchy root.  In object mode, the hierarchy would stay in place.\n\nFile Selection:  Now has a button to launch a file browser for path selection.  (See NOTES)\n\nPreferences Auto Save:  ExportBVH now automatically saves your configuration for ease of use.\n\nApply:  BVHExport may now be run without dismissing the window on completion.\n\nHelp:  Displays this window.\n\n\nNOTES:\n\nIf the path button does not work, you will need to locate the script 'filebrowse.mel' on your system and change the sourc FILEBROWSEPATH line accordingly.\n\n  This software is FREE for distribution and modification.  Questions, comments, complaints, feature requests may be sent to Samantha Patterson, circle@deeptht.armory.com";
+   columnLayout -adjustableColumn true;
+         scrollField -wordWrap true -editable false -height 600 -nl 1000 -text $txt;
+      //button -label "Dismiss" -command ("deleteUI -window $ghHelpWin;");
+   }
+   showWindow $ghHelpWin;
+}
+  
+$gcMajorMenu="X,Z,Y";
+$gcMinorMenu="Z,X,Y";
+if (!`window -exists -query $ghWindow`) { //Open window if it doesn't exist.
+   ReadPrefFile();			//Read user preferences from last run.
+   
+   $ghWindow = `window -width 380 -height 260 
+                       -title "Export to BVH 1.6" -iconName "BVH Export"`;
+   
+   columnLayout hTop;				//Overall window by column
+      rowLayout -nc 3 -parent hTop hRow1;	//Row for Root and Range frames.
+         frameLayout -borderStyle "etchedIn" -label "Root Joint" 
+                     -height 80 -width 100 -parent hRow1 hJointBox;
+            columnLayout -parent hJointBox;
+               string $hJBC=`radioCollection`;
+               string $hJB1=`radioButton -label "Top"     -onCommand ("$giJointSelect=0")`;
+               string $hJB2=`radioButton -label "Current" -onCommand ("$giJointSelect=1")`;
+               if ($giJointSelect == 0) {
+                  radioCollection -edit -select $hJB1 $hJBC;
+               } else {
+                  radioCollection -edit -select $hJB2 $hJBC;
+               }
+             
+               $ghPickRoot=`button -label "Pick" -command ("PickRoot()")`;
+   
+   
+         frameLayout -borderStyle "etchedIn" -label "Time Range" 
+                     -height 80 -width 100 -parent hRow1 hTimeRange;
+            columnLayout -parent hTimeRange hTimeRangeCol;
+               string $hTRC=`radioCollection`;
+               string $hTR1=`radioButton -label "Keyed Range" -onCommand ("TimeRange(0)")`;
+               string $hTR2=`radioButton -label "Manual"      -onCommand ("TimeRange(1)")`;
+               if ( $giRangeSelect == 0) {
+                  radioCollection -edit -select $hTR1 $hTRC;
+               } else {
+                  radioCollection -edit -select $hTR2 $hTRC;
+               }
+               rowLayout -nc 3 -cw3 35 30 35 -width 100 
+                         -parent hTimeRangeCol hTimeRangeRow;
+                  $ghRangeStart= `intField -value $giRange[0] -enable $giRangeSelect -width 30`;
+                  text -label " to ";
+                  $ghRangeEnd  = `intField -value $giRange[1] -enable $giRangeSelect -width 30`;
+   
+   
+         frameLayout -borderStyle "etchedIn" -label "Sample Rate" 
+                     -height 80 -width 180 -parent hRow1 hSampleRate;
+            columnLayout -parent hSampleRate;
+               string $hSRC=`radioCollection`;
+               string $hSR1=`radioButton -label "All Frames" -onCommand ("SampleRate(0)")`;
+               string $hSR2=`radioButton -label "Every Nth Frame" -onc  ("SampleRate(1)")`;
+               if ( $giSampleSelect == 0) {
+                  radioCollection -edit -select $hSR1 $hSRC;
+               } else {
+                  radioCollection -edit -select $hSR2 $hSRC;
+               }
+               $ghSampleRate = `intField -enable $giSampleSelect -min 1
+                                         -value $giSampleRate`;
+   
+   
+      rowLayout -nc 2 -parent hTop hRow2;		//Row for translations.
+         frameLayout -borderStyle "etchedIn" -label "Base Adjustment" 
+                     -width 380 -parent hRow2 hBaseAdj;
+            columnLayout -parent hBaseAdj hBaseAdjC;
+               rowLayout -parent hBaseAdjC; 
+                  $ghTranslate = `radioButtonGrp -numberOfRadioButtons 2 
+                                                 -label "Translation:  "
+                                                 -labelArray2 "World" "Object"
+                                                 -select $giBaseTranslation`;
+               rowLayout -parent hBaseAdjC; 
+                  $ghRotate    = `radioButtonGrp -numberOfRadioButtons 2 
+                                                 -label "Rotation:  "
+                                                 -labelArray2 "World" "Object"
+                                                 -select $giBaseRotation`;
+
+        //The Axis rotate order panel.
+        frameLayout -borderStyle "etchedIn" -width 380 -label "Rotate Order"
+                 -parent hTop hRotateOrder;
+            rowLayout -nc 4 -parent hRotateOrder hRotSub;
+            text -label " Major Axis" -parent hRotSub;
+            frameLayout -width 50 -labelVisible false -parent hRotSub hMajor; 
+               menuBarLayout -width 10;// -parent hRotateOrder;
+                  menu -label $gcMajorMenu hMajorMenu;
+                     menuItem -label "X,Y,Z" -command("menu -e -label \"X,Y,Z\" hMajorMenu");
+                     menuItem -label "X,Z,Y" -command("menu -e -label \"X,Z,Y\" hMajorMenu");
+                     menuItem -label "Y,X,Z" -command("menu -e -label \"Y,X,Z\" hMajorMenu");
+                     menuItem -label "Y,Z,X" -command("menu -e -label \"Y,Z,X\" hMajorMenu");
+                     menuItem -label "Z,X,Y" -command("menu -e -label \"Z,X,Y\" hMajorMenu");
+                     menuItem -label "Z,Y,X" -command("menu -e -label \"Z,Y,X\" hMajorMenu");
+            text -label "Minor Axis" -parent hRotSub;
+            frameLayout -width 50 -labelVisible false -parent hRotSub hMinor;
+               menuBarLayout -width 10;
+                  menu -label $gcMinorMenu hMinorMenu;
+                     menuItem -label "X,Y,Z" -command("menu -e -label \"X,Y,Z\" hMinorMenu");
+                     menuItem -label "X,Z,Y" -command("menu -e -label \"X,Z,Y\" hMinorMenu");
+                     menuItem -label "Y,X,Z" -command("menu -e -label \"Y,X,Z\" hMinorMenu");
+                     menuItem -label "Y,Z,X" -command("menu -e -label \"Y,Z,X\" hMinorMenu");
+                     menuItem -label "Z,X,Y" -command("menu -e -label \"Z,X,Y\" hMinorMenu");
+                     menuItem -label "Z,Y,X" -command("menu -e -label \"Z,Y,X\" hMinorMenu");
+   
+      //The File name panel.
+      frameLayout -borderStyle "etchedIn" -width 380 -labelVisible false 
+                  -parent hTop hFileDia;
+         rowLayout -nc 3 -cw3 60 270 50 -parent hFileDia;
+            text -label "Filename" -width 50;
+            $ghFilename = `textField -text $gcFilename -width 265`;
+            button -label " Path" -width 50 -align right 
+                   -command ("SetDir();") "Path";
+      
+      //The Command button panel.
+      frameLayout -borderStyle "etchedIn" -labelVisible false 
+                  -parent hTop -width 380;
+         rowLayout -nc 4;
+            button -label "Okay" -command ("if (OnOkay()) ExitBVH();") "Okay";
+            button -label "Apply" -command ("OnOkay()") "Apply";
+            button -label "Help" -command ("OnHelp()") "Help";
+            button -label "Dismiss" -command ("ExitBVH();") "Dismiss";
+      setParent ..;
+}
+showWindow $ghWindow;
