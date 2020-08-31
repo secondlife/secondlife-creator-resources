@@ -1,4 +1,3 @@
-SecondLife Sample Content
-=========================
+# Second Life Creator Resources
 
-This repository contains model files for SL content creation.
+Models, scripts and other assets for Second Life content creation.
